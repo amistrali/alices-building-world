@@ -1,0 +1,15 @@
+.abw-fade { animation: fadeUp 0.28s ease both; }
+
+.abw-card {
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+.abw-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 24px rgba(74, 63, 53, 0.13);
+}
+
+.abw-heart-pop { animation: pop 0.32s ease; }
+
+.abw-chip {
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
