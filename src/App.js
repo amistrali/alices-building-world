@@ -592,7 +592,73 @@ const LOADING_STEPS = [
   "Metto tutto in ordine…"
 ];
 
+// ── IMPORT DALLA VERSIONE PRO ──────────────────────────────────────────────
+// La versione su claude.ai (generazione sul piano Pro) non puo' mostrare foto
+// ne' video. Il suo pulsante "Apri con foto e video" apre questa app con le
+// attivita' gia' pronte dentro il link: #import=<JSON compresso deflate-raw in
+// base64url>. Il frammento dopo # non arriva al server, quindi niente limiti
+// di lunghezza dell'URL lato Vercel. Qui non si rigenera niente: si cercano
+// solo i video, con la stessa /api/video di sempre.
+const IMPORT_PREFIX = "#import=";
+
+async function decodeImport(str) {
+  let b64 = str.replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4) b64 += "=";
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const stream = new Blob([bytes]).stream().pipeThrough(new window.DecompressionStream("deflate-raw"));
+  const text = await new Response(stream).text();
+  const data = JSON.parse(text);
+  const list = Array.isArray(data?.activities) ? data.activities.slice(0, 12) : [];
+  if (!list.length) throw new Error("vuoto");
+  return { at: Number(data.at) || Date.now(), activities: list.map(normalizeActivity) };
+}
+
+function ImportBanner({ state, onSave, canSave, saved }) {
+  return (
+    <div style={{
+      background: T.accentSoft, border: "1.5px solid #CDE8E3", borderRadius: 14,
+      padding: "13px 16px", display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap"
+    }}>
+      <div style={{ flex: "1 1 240px", fontSize: 13, color: "#2C544E", lineHeight: 1.55 }}>
+        <strong>Arrivate dalla versione Pro.</strong>{" "}
+        {state === "video"
+          ? "Cerco foto e video tutorial…"
+          : "Qui vedi le foto del risultato e il video dentro la scheda."}
+      </div>
+      {canSave && (
+        <button type="button" onClick={onSave} disabled={saved} style={{
+          padding: "8px 15px", borderRadius: 18, border: "none", background: T.accent,
+          color: "#fff", fontSize: 12.5, fontWeight: 700, cursor: saved ? "default" : "pointer", opacity: saved ? 0.7 : 1
+        }}>{saved ? "✓ In archivio" : "📦 Salva in archivio"}</button>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
+  const [imported, setImported] = useState(null); // { at, activities, state: "video" | "ok" | "error" }
+
+  useEffect(() => {
+    const h = window.location.hash || "";
+    if (!h.startsWith(IMPORT_PREFIX)) return;
+    let alive = true;
+    (async () => {
+      try {
+        const data = await decodeImport(h.slice(IMPORT_PREFIX.length));
+        if (!alive) return;
+        setImported({ ...data, state: "video" });
+        const { list } = await resolveVideos(data.activities, 2);
+        if (alive) setImported({ ...data, activities: list, state: "ok" });
+      } catch (e) {
+        console.error("import non valido", e);
+        if (alive) setImported({ at: Date.now(), activities: [], state: "error" });
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
   const [user, setUser] = useState(null);
   const [authReady, setAuthReady] = useState(false);
   const [ready, setReady] = useState(false);
@@ -848,6 +914,60 @@ export default function App() {
           <div style={{ fontSize: 34, marginBottom: 10 }}>🧰</div>
           <div style={{ width: 26, height: 26, margin: "0 auto", border: `3px solid ${T.line}`, borderTopColor: T.accent, borderRadius: "50%", animation: "spin 1s linear infinite" }} />
         </div>
+      </div>
+    );
+  }
+
+  if (imported) {
+    const importId = `imp-${imported.at}`;
+    const savedImport = archive.some(s => s.id === importId);
+    const saveImport = () => {
+      if (!user || savedImport) return;
+      const session = { id: importId, at: imported.at, filters: null, activities: imported.activities };
+      const next = [session, ...archive].slice(0, 60);
+      setArchive(next);
+      persist(current, next, liked);
+      notify("📦 Salvato in archivio");
+    };
+    const likeOrAsk = (a) => user ? toggleLike(a) : notify("Accedi all'app per salvare i preferiti");
+    return (
+      <div style={{ minHeight: "100vh", background: T.bg, paddingBottom: 60 }}>
+        <header style={{ background: T.card, borderBottom: `1.5px solid ${T.line}`, position: "sticky", top: 0, zIndex: 40 }}>
+          <div style={{ maxWidth: 1120, margin: "0 auto", padding: "13px 20px", display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 26 }}>🧰</span>
+            <div>
+              <div style={{ fontSize: 16.5, fontWeight: 800, color: T.ink, lineHeight: 1.15 }}>Alice's Building World</div>
+              <div style={{ fontSize: 11.5, color: T.inkFaint }}>Foto e video delle attività scelte</div>
+            </div>
+          </div>
+        </header>
+        <main style={{ maxWidth: 1120, margin: "0 auto", padding: "20px", display: "grid", gap: 18 }}>
+          {imported.state === "error" ? (
+            <EmptyState emoji="🔗" title="Questo link non si apre"
+              text="Il link è incompleto o rovinato. Torna nella versione Pro e premi di nuovo «Apri con foto e video»." />
+          ) : (
+            <>
+              <ImportBanner state={imported.state} canSave={!!user} saved={savedImport} onSave={saveImport} />
+              <Grid>
+                {imported.activities.map(a => (
+                  <ActivityCard key={a.id} activity={a} liked={!!liked[a.id]}
+                    onLike={() => likeOrAsk(a)} onOpen={() => setDetail(a)} />
+                ))}
+              </Grid>
+            </>
+          )}
+        </main>
+        {detail && (
+          <ActivityDetail activity={detail} liked={!!liked[detail.id]}
+            onLike={() => likeOrAsk(detail)} onClose={() => setDetail(null)} />
+        )}
+        {notification && (
+          <div style={{
+            position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)",
+            background: T.ink, color: "#fff", padding: "11px 20px", borderRadius: 24,
+            fontSize: 13, zIndex: 90, boxShadow: "0 8px 26px rgba(0,0,0,0.22)", maxWidth: "90vw", textAlign: "center"
+          }}>{notification}</div>
+        )}
       </div>
     );
   }
