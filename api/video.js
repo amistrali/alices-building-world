@@ -385,7 +385,58 @@ async function resolveActivity(key, activity, effort) {
 }
 
 // ── HANDLER ─────────────────────────────────────────────────────────────────
+// GET /api/video?n=<nome>&q=<ricerca it>&qe=<ricerca en>&m=<materiali separati da |>
+// E' il pulsante "Guarda il video" della versione Pro su claude.ai: quella
+// pagina non puo' chiamare server esterni, ma puo' aprire un link. Qui si
+// sceglie il tutorial con lo stesso punteggio di sempre e si va dritti su
+// YouTube; se niente supera la soglia, una paginetta lo dice chiaramente.
+function escHtml(s) {
+  return String(s || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function noVideoPage(res, name, query, reason) {
+  const search = "https://www.youtube.com/results?search_query=" + encodeURIComponent(query || name || "");
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  return res.status(200).send(`<!doctype html><html lang="it"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Nessun video sicuro</title>
+<style>body{font-family:system-ui,sans-serif;background:#FFF9F0;color:#4A3F35;margin:0;padding:32px 20px;line-height:1.6}
+main{max-width:480px;margin:0 auto}h1{font-size:20px}a{display:inline-block;margin-top:14px;padding:10px 18px;border-radius:22px;background:#2E9C8E;color:#fff;text-decoration:none;font-weight:700}</style></head>
+<body><main><h1>${escHtml(name)}</h1><p>${escHtml(reason)}</p>
+<p>Le istruzioni scritte nella scheda bastano da sole. Se vuoi comunque guardare cosa c'e' su YouTube:</p>
+<a href="${escHtml(search)}">Cerca su YouTube</a></main></body></html>`);
+}
+
+async function redirectHandler(req, res, key) {
+  const q = req.query || {};
+  const name = String(q.n || "").slice(0, 200);
+  if (!name) return res.status(400).send("Manca il nome del progetto.");
+  const activity = {
+    name,
+    videoQuery: String(q.q || "").slice(0, 200),
+    videoQueryEn: String(q.qe || "").slice(0, 200),
+    materials: String(q.m || "").split("|").map(s => s.trim()).filter(Boolean).slice(0, 20)
+  };
+  const effort = Math.min(3, Math.max(1, Number(q.e) || 2));
+  if (!key) return noVideoPage(res, name, activity.videoQuery, "La ricerca dei video non e' configurata.");
+  try {
+    const v = await resolveActivity(key, activity, effort);
+    if (v && v.url) {
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Location", v.url);
+      return res.status(302).end();
+    }
+    return noVideoPage(res, name, activity.videoQuery,
+      "Non ho trovato un video davvero pertinente: meglio nessun video che uno che costruisce un'altra cosa.");
+  } catch (e) {
+    if (e.status === 403) {
+      return noVideoPage(res, name, activity.videoQuery, "La quota giornaliera di YouTube e' esaurita: riprova domani.");
+    }
+    return noVideoPage(res, name, activity.videoQuery, "La ricerca del video non ha funzionato in questo momento.");
+  }
+}
+
 export default async function handler(req, res) {
+  if (req.method === "GET") return redirectHandler(req, res, process.env.YOUTUBE_API_KEY);
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const key = process.env.YOUTUBE_API_KEY;
